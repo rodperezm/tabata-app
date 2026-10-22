@@ -1,0 +1,9 @@
+{
+  "appId": "com.tabata.timer",
+  "appName": "Tabata",
+  "webDir": "www",
+  "backgroundColor": "#F0EEE9",
+  "ios": {
+    "contentInset": "never"
+  }
+}

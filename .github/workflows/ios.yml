@@ -1,0 +1,39 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Sincronizar app web con iOS
+        run: npx cap sync ios
+
+      # Esta compilación verifica que la app arma bien en iOS, sin firma.
+      # Para subirla a la App Store hay que agregar la cuenta de Apple Developer
+      # (certificados y perfil de aprovisionamiento). Ver README.md, sección iOS.
+      - name: Compilar para simulador de iOS (sin firma)
+        working-directory: ios/App
+        run: |
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
