@@ -1,4 +1,4 @@
-const CACHE = 'tabata-v1';
+const CACHE = 'tabata-v2';
 const ARCHIVOS = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
