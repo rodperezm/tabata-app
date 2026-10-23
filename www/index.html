@@ -189,45 +189,199 @@ function render(){
   $('go').innerHTML = (state==='run') ? ICON_PAUSE : (state==='done' ? ICON_AGAIN : ICON_PLAY);
   $('go').setAttribute('aria-label', lbl);
 }
-function enter(){
-  const ph = phases[idx]; left = ph.t;
-  if(ph.k==='work'){ beep(880,0.5,0.5); if(ph.first) say('¡Vamos!'); }
-  else if(ph.k==='rest'||ph.k==='rr'||ph.k==='cool'){ beep(500,0.4,0.4); }
-  render();
+/* ---------- Pista de audio completa ----------
+   Todo el entrenamiento (tic-tac, pitidos, avisos) se genera como un solo audio
+   y se reproduce como audio de medios. Así sigue sonando con la pantalla bloqueada
+   y el tiempo se lee del propio audio, que no se detiene en segundo plano. */
+const SR = 8000, MAX_TRACK = 2400;               // 8 kHz; hasta 40 minutos
+let starts = [], total = 0, useTrack = false, trackAudio = null, trackURL = null, base = 0, t0 = 0;
+
+function plan(){
+  phases = build(); starts = []; let a = 0;
+  phases.forEach(p => { starts.push(a); a += p.t; });
+  total = a;
 }
-function step(){
-  if(state!=='run') return;
-  left--;
-  if(left<=0){
-    idx++;
-    if(idx>=phases.length){ finish(); return; }
-    enter(); return;
+function wavBlob(samples){
+  const n = samples.length, b = new ArrayBuffer(44 + n*2), v = new DataView(b);
+  const w = (o,s) => { for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+n*2,true); w(8,'WAVEfmt '); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,SR,true); v.setUint32(28,SR*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,n*2,true);
+  new Int16Array(b, 44).set(samples);
+  return new Blob([b], {type:'audio/wav'});
+}
+function addTone(buf, at, freq, dur, vol, tri){
+  const s0 = Math.round(at*SR), n = Math.round(dur*SR), k = Math.pow(0.0001/vol, 1/n);
+  let env = vol;
+  for(let i=0;i<n;i++){
+    const j = s0 + i; if(j<0 || j>=buf.length) break;
+    const ph = 2*Math.PI*freq*i/SR;
+    const x = tri ? (2/Math.PI)*Math.asin(Math.sin(ph)) : Math.sin(ph);
+    const y = buf[j] + x*env*(i<16 ? i/16 : 1)*30000;
+    buf[j] = y>32767 ? 32767 : (y<-32768 ? -32768 : y);
+    env *= k;
   }
-  if(left<=3) beep(700,0.12,0.45); else tick();
-  render();
 }
-function finish(){
-  clearInterval(timer); timer = null; state = 'done';
-  beep(660,0.2,0.5); setTimeout(()=>beep(880,0.2,0.5),220); setTimeout(()=>beep(1100,0.5,0.5),440);
-  say('¡Lo lograste!');
-  render();
+function buildTrack(){
+  if(total > MAX_TRACK) return null;             // muy largo: se usa el modo en vivo
+  const buf = new Int16Array(Math.ceil((total + 2)*SR));
+  let c = 0;
+  phases.forEach((ph, i) => {
+    const s = starts[i];
+    if(ph.k==='work') addTone(buf, s, 880, .5, .5);
+    else if(ph.k!=='prep') addTone(buf, s, 500, .4, .4);
+    if(ph.first) addTone(buf, s+.45, 1175, .35, .5);      // aviso de "¡Vamos!"
+    for(let k=1;k<ph.t;k++){
+      if(ph.t-k <= 3) addTone(buf, s+k, 700, .12, .45);   // últimos 3 segundos
+      else { c++; if(c%2) addTone(buf, s+k, 1500, .07, .6, true); else addTone(buf, s+k, 950, .09, .6, true); }
+    }
+  });
+  addTone(buf, total, 660, .2, .5); addTone(buf, total+.22, 880, .2, .5); addTone(buf, total+.44, 1100, .5, .5);  // ¡Lo lograste!
+  return URL.createObjectURL(wavBlob(buf));
 }
-function startRun(){
-  audio(); phases = build(); idx = 0; state = 'run';
-  clearInterval(timer); timer = setInterval(step, 1000);
-  enter();
+
+/* ---------- Pantalla encendida y controles de bloqueo ---------- */
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const NOSLEEP_SRC = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAM0bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAB9AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAl50cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAB9AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAABAAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAfQAAAAAAABAAAAAAHWbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAgABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABgW1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAUFzdGJsAAAAuXN0c2QAAAAAAAAAAQAAAKlhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAEAAQABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAAL2F2Y0MBQsAe/+EAF2dCwB7ZBCbARAAAAwAEAAADABA8WLkgAQAFaMuDyyAAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAKuAAACrgAAAAYc3R0cwAAAAAAAAABAAAABAAAIAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAABAAAAAEAAAAkc3RzegAAAAAAAAAAAAAABAAAAo8AAAAKAAAACwAAAAoAAAAUc3RjbwAAAAAAAAABAAADZAAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAAK2bWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0yIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTIgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAXZYiEBTyYoAA/vycnJ1111111111114AAAAAGQZo4CnhGAAAAB0GaVAKeEYAAAAAGQZpgEvCM';
+let wl = null, nosleep = null;
+async function lockScreen(){
+  try{                                            // respaldo para iPhone (video mudo en bucle)
+    if(IS_IOS){
+      if(!nosleep){
+        nosleep = document.createElement('video');
+        nosleep.setAttribute('playsinline',''); nosleep.setAttribute('muted',''); nosleep.muted = true; nosleep.loop = true;
+        nosleep.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:.01;pointer-events:none';
+        nosleep.src = NOSLEEP_SRC; document.body.appendChild(nosleep);
+      }
+      nosleep.play().catch(()=>{});
+    }
+  }catch(e){}
+  try{
+    if('wakeLock' in navigator && !wl){
+      wl = await navigator.wakeLock.request('screen');
+      wl.addEventListener('release', () => { wl = null; });
+    }
+  }catch(e){ wl = null; }
+}
+function unlockScreen(){
+  try{ wl && wl.release(); }catch(e){} wl = null;
+  try{ nosleep && nosleep.pause(); }catch(e){}
+}
+function setMedia(){
+  if(!('mediaSession' in navigator)) return;
+  try{
+    let title = 'Tabata', artist = '';
+    if(state==='done'){ title = '¡Lo lograste!'; }
+    else if(state==='run' || state==='paused'){
+      const ph = phases[idx]; title = NAME[ph.k];
+      if(ph.k==='work') artist = 'Ronda '+ph.r+'/'+cfg.R+' · Ejercicio '+ph.e+'/'+cfg.E;
+      else if(ph.k==='rest') artist = 'Siguiente: ejercicio '+(ph.e+1);
+      else if(ph.k==='rr') artist = 'Siguiente: ronda '+(ph.r+1);
+    }
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title, artist, album:'Tabata',
+      artwork:[{src:new URL('icons/icon-512.png', location.href).href, sizes:'512x512', type:'image/png'}]
+    });
+    navigator.mediaSession.playbackState = state==='run' ? 'playing' : (state==='paused' ? 'paused' : 'none');
+  }catch(e){}
+}
+if('mediaSession' in navigator){
+  try{
+    navigator.mediaSession.setActionHandler('play', () => resumeRun());
+    navigator.mediaSession.setActionHandler('pause', () => pauseRun());
+  }catch(e){}
+}
+
+/* ---------- Reloj y ciclo del entrenamiento ---------- */
+function elapsed(){
+  if(useTrack && trackAudio) return trackAudio.currentTime;
+  return base + (state==='run' ? (performance.now() - t0)/1000 : 0);
+}
+function liveSound(changedPhase){                 // solo en modo en vivo (sin pista)
+  const ph = phases[idx];
+  if(changedPhase){ if(ph.k==='work') beep(880,0.5,0.5); else if(ph.k!=='prep') beep(500,0.4,0.4); }
+  else if(left<=3) beep(700,0.12,0.45); else tick();
+}
+function onPhase(){
+  const ph = phases[idx];
+  if(ph.first && document.visibilityState==='visible' && elapsed()-starts[idx] < 2) say('¡Vamos!');
+}
+function loop(){
+  if(state!=='run') return;
+  const e = elapsed();
+  if(e >= total){ finish(e); return; }
+  let i = idx;
+  while(i < phases.length-1 && e >= starts[i] + phases[i].t) i++;
+  const rem = Math.max(1, Math.ceil(starts[i] + phases[i].t - e - 1e-6));
+  if(i!==idx || rem!==left){
+    const changed = i!==idx;
+    idx = i; left = rem;
+    if(!useTrack) liveSound(changed);
+    if(changed){ onPhase(); setMedia(); }
+    render();
+  }
+}
+function finish(e){
+  if(e===undefined) e = elapsed();
+  clearInterval(timer); timer = null; state = 'done'; unlockScreen();
+  if(!useTrack){ beep(660,0.2,0.5); setTimeout(()=>beep(880,0.2,0.5),220); setTimeout(()=>beep(1100,0.5,0.5),440); }
+  if(document.visibilityState==='visible' && e < total + 1) say('¡Lo lograste!');
+  setMedia(); render();
+}
+function dropTrack(){
+  if(trackAudio){ try{ trackAudio.pause(); trackAudio.removeAttribute('src'); trackAudio.load(); }catch(e){} trackAudio = null; }
+  if(trackURL){ try{ URL.revokeObjectURL(trackURL); }catch(e){} trackURL = null; }
+  useTrack = false;
+}
+async function startRun(){
+  audio(); lockScreen(); plan(); dropTrack();
+  state = 'run'; idx = 0; left = phases[0].t; base = 0;
+  const url = buildTrack();
+  if(url){
+    trackURL = url;
+    const a = new Audio(url); a.preload = 'auto';
+    a.addEventListener('pause', () => { if(state==='run' && !a.ended && a.currentTime < total) pauseRun(); });  // pausa desde la pantalla de bloqueo
+    a.addEventListener('play',  () => { if(state==='paused') resumeRun(); });
+    trackAudio = a;
+    try{ await a.play(); useTrack = true; try{ keep && keep.pause(); }catch(e){} }
+    catch(e){ trackAudio = null; try{ URL.revokeObjectURL(url); }catch(e2){} trackURL = null; }
+  }
+  if(state!=='run') return;                       // el usuario salió mientras cargaba
+  if(!useTrack) t0 = performance.now();
+  clearInterval(timer); timer = setInterval(loop, 100);
+  if(!useTrack) liveSound(true);
+  onPhase(); setMedia(); render();
+}
+function pauseRun(){
+  if(state!=='run') return;
+  if(!useTrack) base = elapsed();
+  state = 'paused';
+  if(useTrack && trackAudio) trackAudio.pause();
+  unlockScreen(); setMedia(); render();
+}
+function resumeRun(){
+  if(state!=='paused') return;
+  audio(); state = 'run';
+  if(useTrack && trackAudio){ try{ keep && keep.pause(); }catch(e){} if(trackAudio.paused) trackAudio.play().catch(()=>{}); }
+  else t0 = performance.now();
+  lockScreen(); setMedia(); render();
 }
 function stopAll(){
   clearInterval(timer); timer = null; state = 'idle';
   try{ speechSynthesis.cancel(); }catch(e){}
+  dropTrack(); unlockScreen();
   try{ keep && keep.pause(); }catch(e){}
+  if('mediaSession' in navigator){ try{ navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; }catch(e){} }
   render();
 }
+document.addEventListener('visibilitychange', () => {   // al volver a la app: sincronizar y recuperar pantalla encendida
+  if(document.visibilityState==='visible' && state==='run'){ lockScreen(); loop(); }
+});
+window.addEventListener('pageshow', () => { if(state==='run') loop(); });
 $('go').onclick = () => {
   if(state==='idle') startRun();
-  else if(state==='run'){ state = 'paused'; render(); }
-  else if(state==='paused'){ audio(); state = 'run'; render(); }
-  else if(state==='done'){ stopAll(); }
+  else if(state==='run') pauseRun();
+  else if(state==='paused') resumeRun();
+  else if(state==='done') stopAll();
 };
 $('reset').onclick = stopAll;
 
@@ -237,7 +391,7 @@ function show(which){
   $('cfg').classList.toggle('on', which==='cfg');
   $('tabH').classList.toggle('on', which==='home');
   $('tabC').classList.toggle('on', which==='cfg');
-  if(which==='cfg' && state==='run'){ state = 'paused'; render(); }
+  if(which==='cfg' && state==='run') pauseRun();
 }
 $('tabH').onclick = () => show('home');
 $('tabC').onclick = () => show('cfg');
