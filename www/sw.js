@@ -1,4 +1,4 @@
-const CACHE = 'tabata-v6';
+const CACHE = 'tabata-v7';
 const ARCHIVOS = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
   'audio/comencemos.wav', 'audio/ultimo-esfuerzo.wav', 'audio/lo-lograste.wav'];
 
