@@ -1,5 +1,6 @@
-const CACHE = 'tabata-v3';
-const ARCHIVOS = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'tabata-v4';
+const ARCHIVOS = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
+  'audio/comencemos.wav', 'audio/ultimo-esfuerzo.wav', 'audio/lo-lograste.wav'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARCHIVOS)).then(() => self.skipWaiting()));

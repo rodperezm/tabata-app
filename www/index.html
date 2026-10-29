@@ -112,7 +112,6 @@ function silentSrc(){
 function audio(){
   try{ if(!ac) ac = new (window.AudioContext||window.webkitAudioContext)(); if(ac.state!=='running') ac.resume(); }catch(e){}
   try{ if(!keep){ keep = new Audio(silentSrc()); keep.loop = true; } keep.play().catch(()=>{}); }catch(e){}
-  try{ speechSynthesis.getVoices(); }catch(e){}
 }
 function beep(freq, dur, vol, type){
   if(!ac) return;
@@ -125,14 +124,56 @@ function beep(freq, dur, vol, type){
   }catch(e){}
 }
 function tick(){ tk++; if(tk%2) beep(1500,0.07,0.6,'triangle'); else beep(950,0.09,0.6,'triangle'); }
-function say(txt){
+/* ---------- Voces ----------
+   Grabaciones en www/audio/ con nombre fijo (se pueden reemplazar por otras .wav
+   de cualquier frecuencia). Se cargan al abrir la página y se pasan a 8 kHz para
+   mezclarlas en la pista; en modo en vivo se reproducen con WebAudio. */
+const VOCES = ['comencemos', 'ultimo-esfuerzo', 'lo-lograste'], clips = {};
+let clipSrc = null;
+function decode(ab){
+  return new Promise((ok, ko) => {
+    try{
+      const C = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      const p = new C(1, 1, 44100).decodeAudioData(ab, ok, ko);
+      if(p && p.catch) p.catch(ko);
+    }catch(e){ ko(e); }
+  });
+}
+function toSR(b){                                 // mezcla canales, baja a SR, normaliza y recorta silencios
+  const ch = []; for(let c=0;c<b.numberOfChannels;c++) ch.push(b.getChannelData(c));
+  const r = b.sampleRate/SR, len = ch[0].length, n = Math.floor(len/r);
+  let y = new Float32Array(n), peak = 0;
+  for(let i=0;i<n;i++){
+    const a = Math.floor(i*r), z = Math.min(len, Math.max(a+1, Math.floor((i+1)*r)));
+    let s = 0; for(let j=a;j<z;j++) for(const x of ch) s += x[j];
+    y[i] = s/((z-a)*ch.length); peak = Math.max(peak, Math.abs(y[i]));
+  }
+  if(!peak) return null;
+  let i0 = 0, i1 = n;
+  for(let i=0;i<n;i++){ y[i] /= peak; }
+  while(i0 < i1 && Math.abs(y[i0]) < .02) i0++;
+  while(i1 > i0 && Math.abs(y[i1-1]) < .02) i1--;
+  return y.slice(i0, i1);
+}
+function loadClips(){
+  VOCES.forEach(n => {
+    fetch('audio/' + n + '.wav')
+      .then(r => r.ok ? r.arrayBuffer() : Promise.reject())
+      .then(decode).then(b => { const y = toSR(b); if(y) clips[n] = y; })
+      .catch(() => {});
+  });
+}
+function playClip(y){
+  if(!ac || !y) return;
   try{
-    const u = new SpeechSynthesisUtterance(txt); u.lang='es-ES'; u.volume=1;
-    const v = speechSynthesis.getVoices().find(x=>/^es/i.test(x.lang)); if(v) u.voice = v;
-    if(speechSynthesis.speaking) speechSynthesis.cancel();
-    speechSynthesis.speak(u);
+    if(ac.state!=='running') ac.resume();
+    const b = ac.createBuffer(1, y.length, SR); b.getChannelData(0).set(y);
+    const s = ac.createBufferSource(), g = ac.createGain(); g.gain.value = .9;
+    s.buffer = b; s.connect(g); g.connect(ac.destination); s.start();
+    clipSrc = s;
   }catch(e){}
 }
+function stopClip(){ try{ clipSrc && clipSrc.stop(); }catch(e){} clipSrc = null; }
 
 /* ---------- Lógica ---------- */
 let phases = [], idx = 0, left = 0, timer = null, state = 'idle'; // idle | run | paused | done
@@ -142,7 +183,7 @@ function build(){
   if(P>0) p.push({k:'prep', t:P});
   for(let r=1;r<=R;r++){
     for(let e=1;e<=E;e++){
-      p.push({k:'work', t:W, r, e, first:(r===1&&e===1)});
+      p.push({k:'work', t:W, r, e});
       if(e<E && D>0) p.push({k:'rest', t:D, r, e});
     }
     if(r<R && RR>0) p.push({k:'rr', t:RR, r});
@@ -195,12 +236,29 @@ function render(){
    y el tiempo se lee del propio audio, que no se detiene en segundo plano. */
 const SR = 8000, MAX_TRACK = 2400;               // 8 kHz; hasta 40 minutos
 let starts = [], total = 0, useTrack = false, trackAudio = null, trackURL = null, base = 0, t0 = 0;
+let voices = [], voiceTimers = [];
 
 function plan(){
   phases = build(); starts = []; let a = 0;
   phases.forEach(p => { starts.push(a); a += p.t; });
   total = a;
+  // Voces: "Comencemos" al partir; "El último esfuerzo" al iniciar la última ronda (si hay más de una);
+  // "Lo lograste" al terminar el último ejercicio (antes del enfriamiento, si lo hay).
+  voices = [];
+  const add = (name, at) => { const y = clips[name]; if(y) voices.push({at, end: at + y.length/SR, y, done: false}); };
+  let last = -1;
+  phases.forEach((ph, i) => {
+    const off = ph.k==='work' ? .5 : 0;                      // después del tono de inicio de ejercicio
+    if(i===0) add('comencemos', starts[i] + off);
+    else if(ph.k==='work' && cfg.R>1 && ph.r===cfg.R && ph.e===1) add('ultimo-esfuerzo', starts[i] + off);
+    if(ph.k==='work') last = i;
+  });
+  if(last>=0){
+    const end = starts[last] + phases[last].t;
+    add('lo-lograste', end + (end < total ? .5 : 1));       // tras el tono del enfriamiento o la señal de término
+  }
 }
+const quiet = at => voices.some(v => at >= v.at - .05 && at < v.end + .1);   // sin tic-tac encima de una voz
 function wavBlob(samples){
   const n = samples.length, b = new ArrayBuffer(44 + n*2), v = new DataView(b);
   const w = (o,s) => { for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
@@ -221,21 +279,30 @@ function addTone(buf, at, freq, dur, vol, tri){
     env *= k;
   }
 }
+function addClip(buf, at, y, vol){
+  const s0 = Math.round(at*SR);
+  for(let i=0;i<y.length;i++){
+    const j = s0 + i; if(j<0 || j>=buf.length) break;
+    const v = buf[j] + y[i]*vol*30000;
+    buf[j] = v>32767 ? 32767 : (v<-32768 ? -32768 : v);
+  }
+}
 function buildTrack(){
   if(total > MAX_TRACK) return null;             // muy largo: se usa el modo en vivo
-  const buf = new Int16Array(Math.ceil((total + 2)*SR));
+  const len = voices.reduce((m, v) => Math.max(m, v.end + .5), total + 2);
+  const buf = new Int16Array(Math.ceil(len*SR));
   let c = 0;
   phases.forEach((ph, i) => {
     const s = starts[i];
     if(ph.k==='work') addTone(buf, s, 880, .5, .5);
     else if(ph.k!=='prep') addTone(buf, s, 500, .4, .4);
-    if(ph.first) addTone(buf, s+.45, 1175, .35, .5);      // aviso de "¡Vamos!"
     for(let k=1;k<ph.t;k++){
       if(ph.t-k <= 3) addTone(buf, s+k, 700, .12, .45);   // últimos 3 segundos
-      else { c++; if(c%2) addTone(buf, s+k, 1500, .07, .6, true); else addTone(buf, s+k, 950, .09, .6, true); }
+      else if(!quiet(s+k)){ c++; if(c%2) addTone(buf, s+k, 1500, .07, .6, true); else addTone(buf, s+k, 950, .09, .6, true); }
     }
   });
-  addTone(buf, total, 660, .2, .5); addTone(buf, total+.22, 880, .2, .5); addTone(buf, total+.44, 1100, .5, .5);  // ¡Lo lograste!
+  addTone(buf, total, 660, .2, .5); addTone(buf, total+.22, 880, .2, .5); addTone(buf, total+.44, 1100, .5, .5);  // señal de término
+  voices.forEach(v => addClip(buf, v.at, v.y, .9));
   return URL.createObjectURL(wavBlob(buf));
 }
 
@@ -299,15 +366,15 @@ function elapsed(){
 function liveSound(changedPhase){                 // solo en modo en vivo (sin pista)
   const ph = phases[idx];
   if(changedPhase){ if(ph.k==='work') beep(880,0.5,0.5); else if(ph.k!=='prep') beep(500,0.4,0.4); }
-  else if(left<=3) beep(700,0.12,0.45); else tick();
+  else if(left<=3) beep(700,0.12,0.45); else if(!quiet(elapsed())) tick();
 }
-function onPhase(){
-  const ph = phases[idx];
-  if(ph.first && document.visibilityState==='visible' && elapsed()-starts[idx] < 2) say('¡Vamos!');
+function liveVoices(e){                           // solo en modo en vivo: la pista ya trae las voces
+  voices.forEach(v => { if(!v.done && e >= v.at){ v.done = true; if(e - v.at < 1) playClip(v.y); } });
 }
 function loop(){
   if(state!=='run') return;
   const e = elapsed();
+  if(!useTrack) liveVoices(e);
   if(e >= total){ finish(e); return; }
   let i = idx;
   while(i < phases.length-1 && e >= starts[i] + phases[i].t) i++;
@@ -316,15 +383,20 @@ function loop(){
     const changed = i!==idx;
     idx = i; left = rem;
     if(!useTrack) liveSound(changed);
-    if(changed){ onPhase(); setMedia(); }
+    if(changed) setMedia();
     render();
   }
 }
 function finish(e){
   if(e===undefined) e = elapsed();
   clearInterval(timer); timer = null; state = 'done'; unlockScreen();
-  if(!useTrack){ beep(660,0.2,0.5); setTimeout(()=>beep(880,0.2,0.5),220); setTimeout(()=>beep(1100,0.5,0.5),440); }
-  if(document.visibilityState==='visible' && e < total + 1) say('¡Lo lograste!');
+  if(!useTrack){
+    beep(660,0.2,0.5); setTimeout(()=>beep(880,0.2,0.5),220); setTimeout(()=>beep(1100,0.5,0.5),440);
+    voices.forEach(v => {                         // voz que cae después del final (sin enfriamiento)
+      if(v.done) return; v.done = true;
+      if(e < total + 1) voiceTimers.push(setTimeout(() => playClip(v.y), Math.max(0, (v.at - e)*1000)));
+    });
+  }
   setMedia(); render();
 }
 function dropTrack(){
@@ -348,8 +420,8 @@ async function startRun(){
   if(state!=='run') return;                       // el usuario salió mientras cargaba
   if(!useTrack) t0 = performance.now();
   clearInterval(timer); timer = setInterval(loop, 100);
-  if(!useTrack) liveSound(true);
-  onPhase(); setMedia(); render();
+  if(!useTrack){ liveSound(true); liveVoices(0); }
+  setMedia(); render();
 }
 function pauseRun(){
   if(state!=='run') return;
@@ -367,7 +439,7 @@ function resumeRun(){
 }
 function stopAll(){
   clearInterval(timer); timer = null; state = 'idle';
-  try{ speechSynthesis.cancel(); }catch(e){}
+  voiceTimers.forEach(clearTimeout); voiceTimers = []; stopClip();
   dropTrack(); unlockScreen();
   try{ keep && keep.pause(); }catch(e){}
   if('mediaSession' in navigator){ try{ navigator.mediaSession.metadata = null; navigator.mediaSession.playbackState = 'none'; }catch(e){} }
@@ -414,9 +486,10 @@ META.forEach(([key,name,min,max]) => {
   inp.onchange = () => set(inp.value);
   rows.appendChild(row);
 });
-$('test').onclick = () => { audio(); beep(880,0.4,0.6); setTimeout(tick,500); setTimeout(tick,1000); setTimeout(()=>say('¡Vamos!'),1400); };
+$('test').onclick = () => { audio(); beep(880,0.4,0.6); setTimeout(tick,500); setTimeout(tick,1000); setTimeout(()=>playClip(clips.comencemos),1400); };
 
 render();
+loadClips();
 
 /* Modo sin internet (solo en la versión web, no dentro de la app nativa) */
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
