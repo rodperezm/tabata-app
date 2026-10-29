@@ -23,6 +23,7 @@ box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:en
 :root[data-theme="dark"]{--bg:#171B2B;--fg:#F0EEE9;--bar:#10131F;--card:#222845;--mut:#a3a7bd;--bd:#343b60;--n1:#6FA6D6;--n2:#CBD33A}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+html,body,button,input{touch-action:manipulation}   /* sin zoom al tocar dos veces (+/− rápido); el zoom con dos dedos sigue */
 .app{height:100%;max-width:520px;margin:0 auto;display:flex;flex-direction:column;overflow:hidden}
 .head{position:relative;text-align:center;padding:10px 16px 8px;font-family:var(--f);flex:none}
 .head .t{font-size:30px;line-height:1;letter-spacing:.04em}
@@ -480,9 +481,13 @@ META.forEach(([key,name,min,max]) => {
     v = Math.min(max, Math.max(min, v)); cfg[key] = v; inp.value = v; save();
     if(state==='idle') render();
   };
-  const bump = d => set((parseInt(inp.value)||0) + d);
-  bm.onclick = () => bump(key==='R'||key==='E' ? -1 : (key==='W'||key==='D' ? -5 : -5));
-  bp.onclick = () => bump(key==='R'||key==='E' ? 1 : 5);
+  const step = (key==='R'||key==='E') ? 1 : 5;
+  const bump = d => {                             // salta al múltiplo de 5 siguiente/anterior (1 → 5 → 10, no 1 → 6 → 11)
+    const v = parseInt(inp.value)||0;
+    set(d > 0 ? Math.floor(v/step)*step + step : Math.ceil(v/step)*step - step);
+  };
+  bm.onclick = () => bump(-1);
+  bp.onclick = () => bump(1);
   inp.onchange = () => set(inp.value);
   rows.appendChild(row);
 });
