@@ -4,7 +4,7 @@ Temporizador Tabata: una sola página web (`www/`) empaquetada con Capacitor 7 p
 
 ## Estructura
 - `www/index.html` — toda la app (HTML+CSS+JS en un archivo, sin framework ni build). Aquí van casi todos los cambios.
-- `www/sw.js` — service worker (primero la red y, si falla, la caché). `www/manifest.webmanifest`, `www/icons/`, `www/instalar.html` (instrucciones para iPhone).
+- `www/sw.js` — service worker (primero la red y, si falla, la caché). `www/manifest.webmanifest`, `www/icons/`, `www/instalar-iphone.html` (instrucciones para iPhone; `instalar.html` solo redirige ahí) y `www/instalar-android.html` (para Android).
 - `android/`, `ios/` — proyectos nativos generados por Capacitor; casi sin modificar. No editar los assets web copiados ahí: se regeneran con `npx cap sync`.
 - `capacitor.config.json` — `appId` (`com.tabata.timer`, permanente en las tiendas), `webDir: www`.
 
